@@ -1,22 +1,11 @@
-# TO-DO
-# 'sex' to 'male' = 1
-# check (boxplot) outliers in limit_bal, and change it to int
-# change 'education' to categorical: (1=graduate school, 2=university, 3=high school, 4=others, 5=unknown, 6=unknown)
-# 'marriage' to categorical: (1=married, 2=single, 3=others)
-# check for sazonality?
-# create feature % of limit use
-# binning age?
-#
-# dummy (será?) 'education', 'marriage'
-# estratificação cruzada/aleatória (70/30/10 ou 60/20/20 ou 70/15/15)
-# alguma feature de histórico de inadimplência, seja por média de pagamento de atrasos
-# ou se pagou atrasado 1+ meses então maior a chance de seguir pagando atrasado
-#
-# reordenar as features, para melhor entendimento
-
-
 # Importing the needed libraries
 import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import normalize
+from sklearn.metrics import roc_auc_score
 %autoindent OFF  # Line exclusively for IDE use (neovim), needs to be taken off if used another IDE
 
 # Load the database
@@ -25,50 +14,137 @@ full = pd.read_csv('csv/creditcards.csv')
 # Lowercase for all columns, for the ease of use
 full.columns = full.columns.str.lower()
 
-full.info()
-full.marriage.value_counts()
+# Changing 'sex' column (two variables) to dummy 'ismale'
+mask = full['sex'] == 2
+full.loc[mask, 'sex'] = 0
+full = full.rename(columns={'sex': 'ismale'})
 
-full.pay_0.value_counts()
+# Dealing with education, turning it to categories and adjusting data,
+# grouping categories 0, 5 and 6 to 'unknown'
+mask = (full['education'] == 5) | (full['education'] == 6) | (full['education'] == 0)
+full.loc[mask, 'education'] = 'unknown'
+mask = full['education'] == 4
+full.loc[mask, 'education'] = 'others'
+mask = full['education'] == 3
+full.loc[mask, 'education'] = 'high_school'
+mask = full['education'] == 2
+full.loc[mask, 'education'] = 'university'
+mask = full['education'] == 1
+full.loc[mask, 'education'] = 'graduate_school'
+full['education'] = full['education'].astype(str).astype('category')
 
-full.loc[0]
+# 'marriage' feature to categorical: (1=married, 2=single, 3=others)
+# As with education, '0' will be unknown
+mask = full['marriage'] == 0
+full.loc[mask, 'marriage'] = 'unknown'
+mask = full['marriage'] == 3
+full.loc[mask, 'marriage'] = 'others'
+mask = full['marriage'] == 2
+full.loc[mask, 'marriage'] = 'single'
+mask = full['marriage'] == 1
+full.loc[mask, 'marriage'] = 'married'
+full['marriage'] = full['marriage'].astype(str).astype('category')
 
-full['default.payment.next.month'].value_counts()
 
-# Rename all these columns so it's more comprehensive:
-'''
-PAY_0: Repayment status in September, 2005 (-1=pay duly, 1=payment delay for one month, 2=payment delay for two months, … 8=payment delay for eight months, 9=payment delay for nine months and above) -- posso considerar os números como 'pagamento realizado com X meses de atraso', se for negativo considerado como pagamento adiantado
+# Rename all columns so it's more comprehensive:
+full = full.rename(columns={'pay_0': 'pay_sep',
+                            'pay_2': 'pay_aug',
+                            'pay_3': 'pay_jul',
+                            'pay_4': 'pay_jun',
+                            'pay_5': 'pay_may',
+                            'pay_6': 'pay_apr',
+                            'bill_amt1': 'bill_sep',
+                            'bill_amt2': 'bill_aug',
+                            'bill_amt3': 'bill_jul',
+                            'bill_amt4': 'bill_jun',
+                            'bill_amt5': 'bill_may',
+                            'bill_amt6': 'bill_apr',
+                            'pay_amt1': 'paid_sep',
+                            'pay_amt2': 'paid_aug',
+                            'pay_amt3': 'paid_jul',
+                            'pay_amt4': 'paid_jun',
+                            'pay_amt5': 'paid_may',
+                            'pay_amt6': 'paid_apr',
+                            'default.payment.next.month': 'default_next',
+                            })
 
-PAY_2: Repayment status in August, 2005 (scale same as above)
 
-PAY_3: Repayment status in July, 2005 (scale same as above)
+# Outliers found in the monetary values, it's easier now to get hold
+# of all the features to normalize later
+mask = full.dtypes == 'float64'
+names_to_norm = full.columns[mask]
 
-PAY_4: Repayment status in June, 2005 (scale same as above)
+# Transforming 'education' and 'marriage' into dummies
+dummies = pd.get_dummies(full[['education', 'marriage']], drop_first=True, dtype=int)
 
-PAY_5: Repayment status in May, 2005 (scale same as above)
+# Create features: % of limit use and % total paid
+mask = full.columns.str.find('bill') == 0
+names_bill = full.columns[mask]
+percent_bill = pd.DataFrame()
+for col in names_bill:
+    percent_bill[f'bill_pct_{col[-3:]}'] = full[col]/full['limit_bal']
 
-PAY_6: Repayment status in April, 2005 (scale same as above)
+percent_paid = pd.DataFrame()
+percent_paid['paid_pct_apr'] = full['paid_apr']/full['bill_apr']
+percent_paid['paid_pct_may'] = full['paid_may']/full['bill_may']
+percent_paid['paid_pct_jun'] = full['paid_jun']/full['bill_jun']
+percent_paid['paid_pct_jul'] = full['paid_jul']/full['bill_jul']
+percent_paid['paid_pct_aug'] = full['paid_aug']/full['bill_aug']
+percent_paid['paid_pct_sep'] = full['paid_sep']/full['bill_sep']
+percent_paid = percent_paid.fillna(0)
+# Treating also the inf values
+percent_paid.replace(np.inf, np.nan, inplace=True)  # replace inf with nans
+percent_paid = percent_paid.fillna(1)  # then fill those nans with 1
 
-BILL_AMT1: Amount of bill statement in September, 2005 (NT dollar)
+# Concatenating all datasets untill now
+full = pd.concat([full, percent_bill], axis=1)
+full = pd.concat([full, percent_paid], axis=1)
+full = pd.concat([full, dummies], axis=1)
 
-BILL_AMT2: Amount of bill statement in August, 2005 (NT dollar)
+# Evaluating the customer default history
+full['default_hist'] = (full[['pay_apr', 'pay_may', 'pay_jun', 'pay_jul', 'pay_aug', 'pay_sep']] > 0).sum(axis=1)
 
-BILL_AMT3: Amount of bill statement in July, 2005 (NT dollar)
 
-BILL_AMT4: Amount of bill statement in June, 2005 (NT dollar)
+# Checking outliers in 'limit_bal'
+#sns.boxplot(y=full['limit_bal'])
+#plt.show()
 
-BILL_AMT5: Amount of bill statement in May, 2005 (NT dollar)
+# Now, yes, dealing with the normalization
+temp = pd.DataFrame(normalize(full[names_to_norm], axis=1))
+temp.columns = names_to_norm
 
-BILL_AMT6: Amount of bill statement in April, 2005 (NT dollar)
+# Creates a new dataframe with the normalized values
+normalized = full.copy()
+for col in temp.columns:
+    normalized[col] = temp[col]
 
-PAY_AMT1: Amount of previous payment in September, 2005 (NT dollar)
+# Getting rid of the original features that were transformed in dummies
+# and also the id feature
+normalized = normalized.drop(['education', 'marriage', 'id'], axis=1)
 
-PAY_AMT2: Amount of previous payment in August, 2005 (NT dollar)
+# All data wrangling was done, now it's time to build up the classification model!
 
-PAY_AMT3: Amount of previous payment in July, 2005 (NT dollar)
+# In this project I'm gonna be using 15% of the whole dataset for validation,
+# approx. 20% for testing and approx. 65% for training
+valid_part = 0.15
+test_part = 0.235  # 19.98% of the total
+train_part = 0.765  # 65,02% of the total
+seed = 42
+target = 'default_next'
 
-PAY_AMT4: Amount of previous payment in June, 2005 (NT dollar)
+# Segregating a validation set
+norm_model, valid = train_test_split(normalized, test_size=valid_part, random_state=seed)
 
-PAY_AMT5: Amount of previous payment in May, 2005 (NT dollar)
+# Splitting the rest into train/test sets
+train, test = train_test_split(norm_model, test_size=test_part, random_state=seed)
 
-PAY_AMT6: Amount of previous payment in April, 2005 (NT dollar)
-'''
+
+##########################################
+#    DEFINING AND TRAINING THE MODELS    #
+##########################################
+
+
+test
+
+
+percent_paid
